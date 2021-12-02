@@ -1,0 +1,176 @@
+---
+title: "Statistical learning"
+author: 'Zachary Katz (UNI: zak2132)'
+date: "12/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(viridis)
+library(glmnet)
+
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+
+```
+
+## Lasso
+
+Predicting birthweight
+
+```{r}
+
+set.seed(11)
+
+bwt_df = 
+  read_csv("./Data/birthweight.csv") %>% 
+  janitor::clean_names() %>%
+  mutate(
+    babysex = as.factor(babysex),
+    babysex = fct_recode(babysex, "male" = "1", "female" = "2"),
+    frace = as.factor(frace),
+    frace = fct_recode(frace, "white" = "1", "black" = "2", "asian" = "3", 
+                       "puerto rican" = "4", "other" = "8"),
+    malform = as.logical(malform),
+    mrace = as.factor(mrace),
+    mrace = fct_recode(mrace, "white" = "1", "black" = "2", "asian" = "3", 
+                       "puerto rican" = "4")) %>% 
+  sample_n(200)
+```
+
+```{r}
+# Vector of responses
+y = bwt_df %>% pull(bwt)
+
+# Matrix of predictors
+# Automatically converts factors into indicator variables
+# Does include an intercept column which glmnet doesn't want, so eliminate it using [, -1]
+x = model.matrix(bwt ~ ., bwt_df)[, -1]
+```
+
+Let's fit lasso now
+
+```{r}
+# Determine set of tuning parameters to test
+lambda_grid = 10 ^ seq(3, -2, by = -0.1)
+
+# By default, comes up with reasonable lambda values
+# But we'll use our own custom ones to have more control
+# This will fit lasso for each lambda provided, then we can choose using cross-validation
+lasso_fit = glmnet(x, y, lambda = lambda_grid)
+
+# Does CV on our behalf in the background pretty fast!
+lasso_cv = cv.glmnet(x, y, lambda = lambda_grid)
+
+# Extract optimal lambda value
+lambda_opt = lasso_cv$lambda.min
+```
+
+Can we actually see what we did...?
+
+```{r}
+lasso_fit %>% 
+  broom::tidy() %>% 
+  # Basically, we currently have some term/lambda combos that don't exist in data frame right now
+  # So what we want to do is have those observations as well
+  # Any time a lambda was too big and we shrunk a coefficient out of our model, we will see 0s now
+  complete(term, lambda, fill = list(estimate = 0)) %>% 
+  filter(term != "(Intercept)") %>% 
+  # Start making some plots
+  # In lasso plots, we want to see for each term in our model, how much the estimated coefficient changes by lambda
+  ggplot(aes(x = log(lambda), y = estimate, group = term, color = term)) + 
+  geom_path() + 
+  # Check out the lambda value that gives you the best predictions, and what the coefficients of the remaining terms would be
+  geom_vline(xintercept = log(lambda_opt))
+```
+
+On the very left side, as lambda is really small, we basically have all coefficients included. But then, as lambda increases, coefficients get smaller. Some stay large for a long time, others start dropping out pretty quickly. The penalty term is becoming more important until eventually everything has been removed from the model. Lasso is taking individual coefficients and shrinking them down gradually, by tweaking lambda, and removing some from the model.
+
+We can also look at the CV curve that comes out of this.
+
+```{r}
+broom::tidy(lasso_cv) %>% 
+  ggplot(aes(x = log(lambda, 10), y = estimate)) + 
+  geom_point()  
+```
+
+The coefficients from the optimal model are shown below.
+
+
+```{r}
+lasso_fit = 
+  glmnet(x, y, lambda = lambda_opt)
+
+lasso_fit %>% broom::tidy()
+```
+
+## Clustering
+
+Let's cluster Pokemon!
+
+```{r}
+poke_df = 
+  read_csv("./Data/pokemon.csv") %>% 
+  janitor::clean_names() %>% 
+  # We're going to select two variables only for this and do clustering based on those two variables
+  select(hp, speed)
+```
+
+Let's take a quick look at our pokemon on these two variable axes.
+
+```{r}
+poke_df %>% 
+  ggplot(aes(x = hp, y = speed)) + 
+  geom_point()
+```
+
+The code chunk below fits the k-means algorithm with three clusters to the data shown above.
+
+```{r}
+kmeans_fit =
+  kmeans(x = poke_df, centers = 3)
+```
+
+Let's see what happened.
+
+```{r}
+poke_df =
+  broom::augment(kmeans_fit, poke_df)
+
+poke_df %>% 
+  ggplot(aes(x = hp, y = speed, color = .cluster)) +
+  geom_point()
+```
+
+The code chunk below maps across a few choices for the number of clusters, and then plots the results.
+
+```{r}
+clusts =
+  tibble(k = 2:4) %>%
+  mutate(
+    km_fit =    map(k, ~kmeans(poke_df, .x)),
+    augmented = map(km_fit, ~broom::augment(.x, poke_df))
+  )
+
+clusts %>% 
+  select(-km_fit) %>% 
+  unnest(augmented) %>% 
+  ggplot(aes(hp, speed, color = .cluster)) +
+  geom_point(aes(color = .cluster)) +
+  facet_grid(~k)
+```
+
