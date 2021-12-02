@@ -174,3 +174,80 @@ clusts %>%
   facet_grid(~k)
 ```
 
+Note: Do we need to standardize the data before clustering? Often, we do. As a best practice it probably makes sense, though we didn't do it here.
+
+Clustering with categorical variables tends not to work great -- or at least, maybe not k-means. Could be extensions of hierarchical or Bayesian clustering that might be more helpful here.
+
+## Clustering trajectories
+
+A second clustering example uses longitudinally observed data. The process we’ll focus on is:
+
+* for each subject, estimate a simple linear regression
+* extract the intercept and slope
+* cluster using the intercept and slope
+
+```{r}
+traj_data = 
+  read_csv("./Data/trajectories.csv")
+
+traj_data %>% 
+  ggplot(aes(x = week, y = value, group = subj)) + 
+  geom_point() + 
+  geom_path()
+```
+
+These steps compute the SLRs, extract estimates, and format the data for k-means clustering.
+
+```{r}
+int_slope_df = 
+  traj_data %>% 
+  nest(data = week:value) %>% 
+  mutate(
+    models = map(data, ~lm(value ~ week, data = .x)),
+    result = map(models, broom::tidy)
+  ) %>% 
+  select(subj, result) %>% 
+  unnest(result) %>% 
+  select(subj, term, estimate) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  rename(int = "(Intercept)", slope = week)
+```
+
+A plot of the intercepts and slopes are below. There does seem to be some structure, and we’ll use k-means clustering to try to make that concrete.
+
+```{r}
+int_slope_df %>% 
+  ggplot(aes(x = int, y = slope)) + 
+  geom_point()
+```
+
+```{r}
+km_fit = 
+  kmeans(
+    x = int_slope_df %>% select(-subj) %>% scale, 
+    centers = 2)
+
+int_slope_df =
+  broom::augment(km_fit, int_slope_df)
+```
+
+The plot below shows the results of k-means based on the intercepts and slopes. This is … not bad, but honestly maybe not what I’d hoped for.
+
+```{r}
+int_slope_df %>% 
+  ggplot(aes(x = int, y = slope, color = .cluster)) +
+  geom_point()
+```
+
+Finally, we’ll add the cluster assignments to the original trajectory data and plot based on this. Again, the cluster assignments are okay but maybe not great.
+
+```{r}
+left_join(traj_data, int_slope_df) %>% 
+  ggplot(aes(x = week, y = value, group = subj, color = .cluster)) + 
+  geom_point() + 
+  geom_path() 
+```
+
